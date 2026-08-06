@@ -36,7 +36,7 @@ use PVE::Storage::Custom::Qnap::API;
 
 use base qw(PVE::Storage::Plugin);
 
-our $VERSION = '0.1.0';
+our $VERSION = '0.2.0';
 
 # Range of pve-storage API versions this plugin supports.
 my $API_MIN = 9;

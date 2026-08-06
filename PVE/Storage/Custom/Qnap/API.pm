@@ -50,7 +50,7 @@ sub _ua {
 
     $self->{ua} //= LWP::UserAgent->new(
         timeout => $self->{timeout},
-        agent => 'pve-qnap-plugin/0.1',
+        agent => 'pve-qnap-plugin/0.2',
         ssl_opts => {
             verify_hostname => $self->{verify_tls} ? 1 : 0,
             SSL_verify_mode => $self->{verify_tls} ? 0x01 : 0x00,
