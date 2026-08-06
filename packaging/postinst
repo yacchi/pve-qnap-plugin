@@ -1,0 +1,11 @@
+#!/bin/sh
+set -e
+
+# Perl modules are loaded when the daemons start, so they must be restarted.
+if [ "$1" = "configure" ]; then
+    for svc in pvedaemon pveproxy pvestatd; do
+        systemctl is-active --quiet "$svc" && systemctl try-restart "$svc" || true
+    done
+fi
+
+exit 0

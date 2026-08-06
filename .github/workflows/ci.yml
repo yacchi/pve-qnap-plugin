@@ -1,0 +1,17 @@
+name: ci
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # libpve-storage-perl is not available here, so `make check` only runs a
+      # perl syntax check when it is present. Building the package still
+      # verifies the packaging itself.
+      - run: make deb
+      - run: dpkg-deb --info pve-qnap-plugin_*_all.deb

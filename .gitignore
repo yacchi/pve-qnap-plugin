@@ -1,0 +1,9 @@
+*.swp
+*~
+.DS_Store
+scratch/
+
+# Not published: reconstructed from a vendor binary.
+# Kept in the private ops repository instead.
+docs/qts_cgi.proto
+tools/extract-qnap-proto.py

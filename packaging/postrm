@@ -1,0 +1,10 @@
+#!/bin/sh
+set -e
+
+if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
+    for svc in pvedaemon pveproxy pvestatd; do
+        systemctl is-active --quiet "$svc" && systemctl try-restart "$svc" || true
+    done
+fi
+
+exit 0

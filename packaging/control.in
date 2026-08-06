@@ -1,0 +1,15 @@
+Package: pve-qnap-plugin
+Version: @VERSION@
+Section: admin
+Priority: optional
+Architecture: all
+Maintainer: pve-qnap-plugin contributors <noreply@example.com>
+Depends: libpve-storage-perl (>= 8.0), libjson-perl, libwww-perl, liblwp-protocol-https-perl, open-iscsi
+Homepage: https://github.com/yacchi/pve-qnap-plugin
+Description: QNAP NAS storage plugin for Proxmox VE
+ Uses a QNAP NAS (QuTS hero / QTS) as block storage for Proxmox VE.
+ Each VM disk maps to one QNAP volume (zvol) exported as an iSCSI LUN.
+ .
+ Snapshots, rollback and clones are performed by the NAS itself, so
+ snapshots do not depend on qcow2 and linked clones are copy-on-write:
+ instant and near zero space.

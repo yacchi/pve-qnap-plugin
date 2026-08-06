@@ -1,0 +1,42 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  deb:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Derive version from tag
+        id: version
+        run: |
+          ref="${GITHUB_REF_NAME}"
+          echo "version=${ref#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Check that the tag matches packaging metadata
+        run: |
+          make_version=$(make -s -p 2>/dev/null | sed -n 's/^VERSION = //p' | head -1)
+          if [ "$make_version" != "${{ steps.version.outputs.version }}" ]; then
+            echo "tag ${{ steps.version.outputs.version }} != Makefile VERSION $make_version" >&2
+            exit 1
+          fi
+
+      - name: Build
+        run: make deb VERSION=${{ steps.version.outputs.version }}
+
+      - name: Checksums
+        run: sha256sum pve-qnap-plugin_*_all.deb > SHA256SUMS
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            pve-qnap-plugin_*_all.deb
+            SHA256SUMS
+          generate_release_notes: true
