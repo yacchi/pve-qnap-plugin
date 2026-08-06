@@ -33,6 +33,7 @@ in its official Kubernetes CSI driver, but nothing existed for Proxmox.
 | snapshot / delete snapshot | native QNAP snapshots |
 | rollback | native, with newer snapshots protected (see below) |
 | template + linked clone | **instant clone (ZFS copy-on-write)** |
+| LXC containers | rootfs on a LUN, formatted ext4 by Proxmox |
 | shared storage | several nodes attached to the same target |
 
 ## Requirements
@@ -79,7 +80,7 @@ pvesm add qnap qnap-iscsi \
     --target iqn.2004-04.com.qnap:ts-873a:iscsi.example.0123456 \
     --qnap-pool-id 2 \
     --username proxmox \
-    --content images \
+    --content images,rootdir \
     --shared 1 \
     --password
 ```
@@ -166,7 +167,6 @@ qm clone 100 999 --snapname snap1 --full 0
 - **255 LUNs maximum** (`max_lun_cnt` on the NAS), so 255 VM disks
 - **Snapshots cannot be read directly.** Anything that needs to open a snapshot
   as a device will not work; clone it first
-- Containers (LXC) are not supported
 - QTS (non-ZFS models) is untested
 
 ## How it works

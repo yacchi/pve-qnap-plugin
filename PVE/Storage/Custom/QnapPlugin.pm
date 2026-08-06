@@ -65,7 +65,7 @@ sub type { return 'qnap'; }
 
 sub plugindata {
     return {
-        content => [{ images => 1, none => 1 }, { images => 1 }],
+        content => [{ images => 1, rootdir => 1, none => 1 }, { images => 1 }],
         format => [{ raw => 1 }, 'raw'],
         'sensitive-properties' => { password => 1 },
     };
