@@ -33,6 +33,7 @@ in its official Kubernetes CSI driver, but nothing existed for Proxmox.
 | snapshot / delete snapshot | native QNAP snapshots |
 | rollback | native, with newer snapshots protected (see below) |
 | template + linked clone | **instant clone (ZFS copy-on-write)** |
+| branch off any snapshot | **linked clone from a snapshot, without touching it** |
 | LXC containers | rootfs on a LUN, formatted ext4 by Proxmox |
 | shared storage | several nodes attached to the same target |
 
@@ -101,7 +102,7 @@ synchronised across the cluster and readable by root only.
 | `qnap-compression` | `1` | LZ4 compression |
 | `qnap-dedup` | `0` | deduplication |
 | `qnap-ssd-cache` | `1` | SSD read cache |
-| `qnap-fast-clone` | `0` | QNAP fast clone (unusable from Proxmox) |
+| `qnap-fast-clone` | `0` | QNAP fast clone. Nothing in Proxmox triggers it — see below |
 | `qnap-sync` | `standard` | ZIL synchronous I/O mode |
 | `qnap-threshold` | `80` | thin provisioning warning threshold (%) |
 | `qnap-api-port` | `443` | management API port |
@@ -117,6 +118,19 @@ supposed to cost.
 **16k gives 4 data + 2 parity = 1.5x**, which is what you want. Use 64k if the
 workload is mostly sequential. It **cannot be changed after creation**, so define
 a second storage if you need a different value.
+
+#### Fast clone does nothing here
+
+The NAS really does implement offloaded copy: its LUNs advertise Third Party Copy
+and a token copy (ODX) between two LUNs works, verified with `ddptctl`.
+
+Nothing in the Proxmox stack ever asks for it. The kernel exposes no copy offload
+(`/sys/block/*/queue/copy_max_bytes` does not exist) and neither QEMU nor Proxmox
+issues EXTENDED COPY or POPULATE TOKEN, so a disk copy is always read-then-write
+over the network.
+
+It costs nothing to leave off, and it would not help anyway: a linked clone moves
+no data at all, which beats copying data quickly.
 
 #### Deduplication is rarely worth it
 
@@ -134,12 +148,24 @@ That becomes a QNAP instant clone — a ZFS copy-on-write clone, so it is
 immediate and takes almost no space.
 
 The web interface only offers *Linked Clone* for templates; that is a Proxmox
-restriction, not a limitation of this plugin. To branch off an arbitrary
-snapshot of a normal VM, use the CLI:
+restriction, not a limitation of this plugin.
+
+### Branching off a snapshot
+
+Any snapshot of an ordinary guest can be turned into a new guest, from the CLI:
 
 ```sh
-qm clone 100 200 --snapname before-upgrade --full 0
+qm clone 100 200 --snapname before-upgrade --full 0    # VM
+pct clone 100 200 --snapname before-upgrade --full 0   # container
 ```
+
+This is a copy-on-write clone, so it is immediate and costs almost nothing. More
+importantly it is **non-destructive**: the source guest keeps running and none of
+its snapshots are touched, which is what makes it a safe alternative to rolling
+back (see below).
+
+Useful for looking at what a guest contained before an upgrade, recovering one
+file, or forking an environment for an experiment.
 
 ## About rollback
 
@@ -155,7 +181,8 @@ can't rollback, 'snap1' is not most recent snapshot on 'qnap-iscsi:vm-100-disk-0
 ```
 
 **To reach an older state while keeping the snapshots after it, clone instead of
-rolling back.** The original disk is left untouched:
+rolling back** (see *Branching off a snapshot* above). The original guest and all
+of its snapshots are left untouched:
 
 ```sh
 qm clone 100 999 --snapname snap1 --full 0

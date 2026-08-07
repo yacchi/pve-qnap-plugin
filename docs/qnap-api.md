@@ -208,6 +208,34 @@ uses.
 
 `targetIndex` also maps the new LUN to that target as a side effect.
 
+## Offloaded copy (ODX / XCOPY)
+
+The LUNs advertise Third Party Copy on VPD page 0x8f, and the commands list is
+not empty:
+
+```
+Extended copy(LID1)   Extended copy      Populate token    Write using token
+Receive copy status   Receive ROD token information        Report all ROD tokens
+```
+
+A token copy between two LUNs on the same NAS works. Verified end to end: write
+distinct data to each LUN, `POPULATE TOKEN` on the source, `WRITE USING TOKEN` on
+the destination, and the destination then matches the source.
+
+```sh
+ddptctl --pt=0,2048  --rtf=token.bin /dev/sdX   # source
+ddptctl --wut=0,2048 --rtf=token.bin /dev/sdY   # destination
+```
+
+Two caveats found while testing: `EXTENDED COPY (LID1)` is rejected with Illegal
+Request, so only the token path works; and the range has to stay within the limits
+on VPD 0x8f (a too-large range returns "LBA out of range").
+
+**None of this is reachable from Proxmox.** The kernel exposes no copy offload —
+`/sys/block/*/queue/copy_max_bytes` does not exist — and neither QEMU nor Proxmox
+issues these commands, so a disk copy is always read-then-write over the network.
+It is only listed here so nobody has to re-investigate it.
+
 ## Deleting
 
 Order matters:
