@@ -36,7 +36,7 @@ use PVE::Storage::Custom::Qnap::API;
 
 use base qw(PVE::Storage::Plugin);
 
-our $VERSION = '0.2.0';
+our $VERSION = '0.2.1';
 
 # Range of pve-storage API versions this plugin supports.
 my $API_MIN = 9;
@@ -317,16 +317,24 @@ sub _snapshots {
     return \@sorted;
 }
 
-sub _snapshot_id {
+sub _snapshot {
     my ($class, $storeid, $scfg, $volume_id, $snap, $noerr) = @_;
 
     for my $snapshot (@{ $class->_snapshots($storeid, $scfg, $volume_id) }) {
-        return $snapshot->{snapshot_id} if ($snapshot->{snapshot_name} // '') eq $snap;
+        return $snapshot if ($snapshot->{snapshot_name} // '') eq $snap;
     }
 
     die "qnap: snapshot '$snap' does not exist\n" if !$noerr;
 
     return undef;
+}
+
+sub _snapshot_id {
+    my ($class, $storeid, $scfg, $volume_id, $snap, $noerr) = @_;
+
+    my $snapshot = $class->_snapshot($storeid, $scfg, $volume_id, $snap, $noerr);
+
+    return $snapshot ? $snapshot->{snapshot_id} : undef;
 }
 
 sub _blocksize_bytes {
@@ -508,7 +516,25 @@ sub free_image {
     # volume whose LUN is still mapped fails with -14 "Failed to unmount volume",
     # a message that has nothing to do with the actual cause.
     my $lun_index = $vol->{lun_index} // -1;
-    $class->_unmap_lun($storeid, $scfg, $lun_index) if $lun_index >= 0;
+
+    if ($lun_index >= 0) {
+        $class->_unmap_lun($storeid, $scfg, $lun_index);
+    } else {
+        # A volume can end up without a LUN if an earlier delete got halfway,
+        # and the NAS then refuses to delete it at all. Giving it a LUN back
+        # makes it deletable again.
+        $api->post(
+            'iscsi/v1/luns',
+            {
+                lun_name => $name,
+                blkdev_name => $vol->{mapping_name},
+                lun_capacity => int(($vol->{size}->{total} // 0) / (1024 * 1024 * 1024)) || 1,
+                lun_thin_allocate => JSON::true,
+                lun_threshold => 0,
+            },
+        );
+        sleep 3;
+    }
 
     for my $snapshot (@{ $class->_snapshots($storeid, $scfg, $vol->{volume_id}) }) {
         eval { $api->delete("snapmgr/v1/snapshots/$snapshot->{snapshot_id}") };
@@ -620,10 +646,20 @@ sub volume_snapshot_delete {
     my ($vtype, $name) = $class->parse_volname($volname);
     my $vol = $class->_volume($storeid, $scfg, $name);
 
-    my $snapshot_id = $class->_snapshot_id($storeid, $scfg, $vol->{volume_id}, $snap, 1);
-    return if !defined($snapshot_id); # stay idempotent
+    my $snapshot = $class->_snapshot($storeid, $scfg, $vol->{volume_id}, $snap, 1);
+    return if !$snapshot; # stay idempotent
 
-    $class->_api($storeid, $scfg)->delete("snapmgr/v1/snapshots/$snapshot_id");
+    # A snapshot a linked clone was made from cannot go away, and the NAS
+    # answers "Success" while deleting nothing rather than saying so. Left
+    # unchecked, Proxmox drops the snapshot from its own config and disagrees
+    # with the NAS from then on, so refuse it here instead.
+    if ($snapshot->{instant_clone_source}) {
+        my $clone = $snapshot->{advance}->{instant_clone_name} || 'a linked clone';
+        die "qnap: cannot delete snapshot '$snap' of '$volname':"
+            . " '$clone' is a linked clone of it\n";
+    }
+
+    $class->_api($storeid, $scfg)->delete("snapmgr/v1/snapshots/$snapshot->{snapshot_id}");
 
     return;
 }
@@ -859,7 +895,10 @@ sub deactivate_storage {
 sub activate_volume {
     my ($class, $storeid, $scfg, $volname, $snapname, $cache) = @_;
 
-    die "qnap: snapshots cannot be activated directly\n" if defined($snapname);
+    # Snapshots are never exposed as devices, and nothing that needs one is
+    # done on this side: the NAS clones from them itself. Proxmox activates the
+    # source snapshot before a linked clone, so this has to succeed.
+    return 1 if defined($snapname);
 
     my $path = $class->path($scfg, $volname, $storeid);
 
