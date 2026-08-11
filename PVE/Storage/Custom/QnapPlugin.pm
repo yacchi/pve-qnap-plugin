@@ -261,9 +261,16 @@ sub _api {
     return $api_clients->{$storeid};
 }
 
+# Set only while list_volumes runs, so one listing serves the whole call.
+# Deliberately not a general cache: everywhere else must see the NAS as it is.
+our $VOLUMES_CACHE;
+
 # Return the block volumes keyed by label, which is what PVE calls the volname.
 sub _volumes {
     my ($class, $storeid, $scfg) = @_;
+
+    return $VOLUMES_CACHE->{$storeid}
+        if $VOLUMES_CACHE && $VOLUMES_CACHE->{$storeid};
 
     my $res = $class->_api($storeid, $scfg)->get('storage/v1/volumes');
 
@@ -277,7 +284,26 @@ sub _volumes {
         $volumes->{$label} = $vol;
     }
 
+    $VOLUMES_CACHE->{$storeid} = $volumes if $VOLUMES_CACHE;
+
     return $volumes;
+}
+
+# PVE's base list_volumes calls list_images once per content type, and this
+# storage declares both `images` and `rootdir` (for LXC), so a plain
+# `pvesm list` listed every volume twice - 15s instead of 7.5s on a NAS
+# holding ~20 volumes. The listing cannot change between those two calls,
+# so serve both from one fetch.
+#
+# Scoped with `local` rather than kept around: a stale listing would be wrong
+# for allocation (the duplicate-name check) and for anything reading state
+# back after a change.
+sub list_volumes {
+    my ($class, $storeid, $scfg, $vmid, $content_types) = @_;
+
+    local $VOLUMES_CACHE = {};
+
+    return $class->SUPER::list_volumes($storeid, $scfg, $vmid, $content_types);
 }
 
 sub _volume {

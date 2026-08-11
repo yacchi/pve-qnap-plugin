@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.3
+
+- List volumes once per `pvesm list` instead of twice. Proxmox calls
+  `list_images` once per content type, and this storage declares both
+  `images` and `rootdir`, so listing cost twice what it needed to. The cache
+  lives only for the duration of one `list_volumes` call, so nothing else
+  sees a stale view of the NAS.
+
 ## 0.2.2
 
 - Fix disk creation failing with "'storage-<id>'-locked command timed out",
