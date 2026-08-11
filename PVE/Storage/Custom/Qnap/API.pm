@@ -110,7 +110,6 @@ sub _is_auth_error {
 sub _rest_raw {
     my ($self, $method, $path, $body) = @_;
 
-    $path = "/$path" if $path !~ m{^/};
     my $req = HTTP::Request->new($method, $self->_base_url() . "/api$path");
     $req->header('sid' => $self->_sid());
 
@@ -137,6 +136,12 @@ sub _rest_raw {
 
 sub rest {
     my ($self, $method, $path, $body) = @_;
+
+    # Normalise here rather than in _rest_raw so the request and the error
+    # messages below agree. They did not, and a missing slash turned
+    # "/api/storage/v1/volumes" into "/apistorage/v1/volumes" in every
+    # diagnostic, which is a confusing thing to read while debugging.
+    $path = "/$path" if $path !~ m{^/};
 
     my $data = $self->_rest_raw($method, $path, $body);
 
