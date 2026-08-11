@@ -24,6 +24,11 @@ in its official Kubernetes CSI driver, but nothing existed for Proxmox.
 | Synology | third-party plugin (btrfs, so no ZFS snapshots) |
 | **QNAP** | **nothing** — hence this |
 
+The architecture — NAS API for provisioning, host open-iscsi block devices for
+data — is the same shape as the official TrueNAS plugin, and deliberately not
+the `ZFS over iSCSI` shape: no root SSH into the NAS, containers work, and
+multipath is possible.
+
 ## What works
 
 | Proxmox VE operation | Implementation |
@@ -36,6 +41,7 @@ in its official Kubernetes CSI driver, but nothing existed for Proxmox.
 | branch off any snapshot | **linked clone from a snapshot, without touching it** |
 | LXC containers | rootfs on a LUN, formatted ext4 by Proxmox |
 | shared storage | several nodes attached to the same target |
+| multipath (MPIO) | **experimental** — works by design, verified on one device (see below) |
 
 ## Requirements
 
@@ -136,6 +142,42 @@ no data at all, which beats copying data quickly.
 
 It costs a lot of memory, and if the goal is many copies of the same guest, a
 linked clone achieves the same thing far more cheaply.
+
+## Multipath (MPIO) — experimental
+
+Unlike the built-in `ZFS over iSCSI` backend — which hands QEMU an `iscsi://`
+URI and therefore bypasses the host's device-mapper layer entirely — this
+plugin logs in with the host's open-iscsi stack and gives QEMU a regular block
+device. Everything MPIO needs on the initiator side is already in place: PVE
+logs into every portal that discovery returns, and the plugin resolves volumes
+to `/dev/mapper/3<NAA>` whenever a multipath map exists. Whether MPIO actually
+works is decided by the target side, not by the plugin.
+
+**Verified once, on the author's hardware** (TS-873A, single controller,
+QuTS hero h5.3.4, target bound to portals on two separate networks):
+
+- `sendtargets` discovery returned both portals and PVE logged into each
+- dm-multipath assembled the map on its own; the target advertises ALUA
+- `pvesm path` switched from `/dev/disk/by-id/scsi-3<NAA>` to the
+  `/dev/mapper` device
+- a direct-I/O read survived losing the primary path mid-flight with zero
+  errors, continuing on the surviving path
+
+Treat this as one data point, not a support statement. QNAP does not officially
+document multipath iSCSI support for QTS or QuTS hero — their MPIO guides only
+cover the Windows initiator side — so other models, firmware versions and
+dual-controller units may behave differently. Reports welcome either way.
+
+To try it:
+
+1. `apt install multipath-tools` on every node
+2. whitelist the LUN WWIDs: `multipath -a 3<naa>` (the NAA is the tail of the
+   device that `pvesm path` prints)
+3. on the NAS, bind the target to portals on both redundant networks
+
+One QNAP quirk to know about: the portal binding of a target can only be
+changed while **no initiator is logged in**, and the NAS needs a few seconds
+after the last logout before it accepts the change.
 
 ## Templates and clones
 
