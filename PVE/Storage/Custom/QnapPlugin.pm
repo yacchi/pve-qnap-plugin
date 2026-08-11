@@ -317,6 +317,42 @@ sub _volume {
     return $vol;
 }
 
+# Resolve a volume name to its id without listing every volume on the NAS.
+#
+# `GET storage/v1/volumes` returns everything about every volume in every pool
+# and costs ~7.6s here. The pool-scoped listing costs ~0.25s. It carries far
+# less - no size, no lun_index, and it spells the name `label` rather than
+# `volume_label` - but an id is all most operations need.
+sub _volume_id {
+    my ($class, $storeid, $scfg, $volname, $noerr) = @_;
+
+    my $pool_id = $scfg->{'qnap-pool-id'};
+    my $res = $class->_api($storeid, $scfg)->get("storage/v1/pools/$pool_id/volumes");
+
+    for my $vol (@{ $res->{collection} // [] }) {
+        next if ($vol->{volume_type} // 0) != $QNAP_VOLUME_TYPE_BLOCK;
+        next if ($vol->{label} // '') ne $volname;
+        return $vol->{volume_id};
+    }
+
+    die "qnap: volume '$volname' does not exist on storage '$storeid'\n" if !$noerr;
+
+    return undef;
+}
+
+# Find a LUN by the volume name it was created under. The LUN listing costs
+# ~0.25s against the ~7.6s of the volume listing, and carries the NAA that
+# `path` needs, so there is no reason to go through the volume at all.
+sub _lun_by_name {
+    my ($class, $storeid, $scfg, $volname) = @_;
+
+    for my $lun (values %{ $class->_luns($storeid, $scfg) }) {
+        return $lun if ($lun->{lun_name} // '') eq $volname;
+    }
+
+    return undef;
+}
+
 sub _luns {
     my ($class, $storeid, $scfg) = @_;
 
@@ -417,16 +453,14 @@ sub path {
 
     my ($vtype, $name, $vmid) = $class->parse_volname($volname);
 
-    my $vol = $class->_volume($storeid, $scfg, $name);
-    my $lun_index = $vol->{lun_index} // -1;
-
-    die "qnap: volume '$name' has no iSCSI LUN attached\n" if $lun_index < 0;
-
-    my $lun = $class->_luns($storeid, $scfg)->{$lun_index}
-        or die "qnap: LUN $lun_index for volume '$name' not found\n";
+    # Look the LUN up by name. Going through the volume listing for a lun_index
+    # first cost ~7.6s on every path() call, and PVE calls this for every
+    # operation that touches a disk.
+    my $lun = $class->_lun_by_name($storeid, $scfg, $name)
+        or die "qnap: volume '$name' has no iSCSI LUN attached\n";
 
     my $naa = $lun->{lun_naa}
-        or die "qnap: LUN $lun_index has no NAA identifier\n";
+        or die "qnap: the LUN for volume '$name' has no NAA identifier\n";
 
     # Prefer the multipath device if one exists.
     my $mpath = "/dev/mapper/3$naa";
@@ -693,10 +727,10 @@ sub volume_snapshot {
     my ($class, $scfg, $storeid, $volname, $snap) = @_;
 
     my ($vtype, $name) = $class->parse_volname($volname);
-    my $vol = $class->_volume($storeid, $scfg, $name);
+    my $volume_id = $class->_volume_id($storeid, $scfg, $name);
 
     $class->_api($storeid, $scfg)->post(
-        "snapmgr/v1/volumes/$vol->{volume_id}/snapshots",
+        "snapmgr/v1/volumes/$volume_id/snapshots",
         {
             snapshot_name => $snap,
             snapshot_description => "Proxmox VE snapshot",
@@ -714,9 +748,9 @@ sub volume_snapshot_delete {
     my ($class, $scfg, $storeid, $volname, $snap, $running) = @_;
 
     my ($vtype, $name) = $class->parse_volname($volname);
-    my $vol = $class->_volume($storeid, $scfg, $name);
+    my $volume_id = $class->_volume_id($storeid, $scfg, $name);
 
-    my $snapshot = $class->_snapshot($storeid, $scfg, $vol->{volume_id}, $snap, 1);
+    my $snapshot = $class->_snapshot($storeid, $scfg, $volume_id, $snap, 1);
     return if !$snapshot; # stay idempotent
 
     # A snapshot a linked clone was made from cannot go away, and the NAS
@@ -741,12 +775,12 @@ sub volume_rollback_is_possible {
     my ($class, $scfg, $storeid, $volname, $snap, $blockers) = @_;
 
     my ($vtype, $name) = $class->parse_volname($volname);
-    my $vol = $class->_volume($storeid, $scfg, $name);
+    my $volume_id = $class->_volume_id($storeid, $scfg, $name);
 
     my $found;
     $blockers //= []; # not guaranteed to be set by the caller
 
-    for my $snapshot (@{ $class->_snapshots($storeid, $scfg, $vol->{volume_id}) }) {
+    for my $snapshot (@{ $class->_snapshots($storeid, $scfg, $volume_id) }) {
         my $snapshot_name = $snapshot->{snapshot_name} // '';
         if ($snapshot_name eq $snap) {
             $found = 1;
@@ -770,8 +804,8 @@ sub volume_snapshot_rollback {
     my ($class, $scfg, $storeid, $volname, $snap) = @_;
 
     my ($vtype, $name) = $class->parse_volname($volname);
-    my $vol = $class->_volume($storeid, $scfg, $name);
-    my $snapshot_id = $class->_snapshot_id($storeid, $scfg, $vol->{volume_id}, $snap);
+    my $volume_id = $class->_volume_id($storeid, $scfg, $name);
+    my $snapshot_id = $class->_snapshot_id($storeid, $scfg, $volume_id, $snap);
 
     my $api = $class->_api($storeid, $scfg);
 
@@ -780,7 +814,7 @@ sub volume_snapshot_rollback {
 
     # Wait for the newer snapshots to disappear, which marks the job as done.
     for my $i (1 .. 120) {
-        my $snapshots = $class->_snapshots($storeid, $scfg, $vol->{volume_id});
+        my $snapshots = $class->_snapshots($storeid, $scfg, $volume_id);
         my $latest = @$snapshots ? $snapshots->[-1]->{snapshot_name} : undef;
         return if defined($latest) && $latest eq $snap;
         sleep 1;
@@ -793,12 +827,12 @@ sub volume_snapshot_info {
     my ($class, $scfg, $storeid, $volname) = @_;
 
     my ($vtype, $name) = $class->parse_volname($volname);
-    my $vol = $class->_volume($storeid, $scfg, $name);
+    my $volume_id = $class->_volume_id($storeid, $scfg, $name);
 
     my $info = {};
     my $order = 0;
 
-    for my $snapshot (@{ $class->_snapshots($storeid, $scfg, $vol->{volume_id}) }) {
+    for my $snapshot (@{ $class->_snapshots($storeid, $scfg, $volume_id) }) {
         $info->{ $snapshot->{snapshot_name} } = {
             id => $snapshot->{snapshot_id},
             timestamp => $snapshot->{create_time},
@@ -818,20 +852,20 @@ sub create_base {
 
     die "qnap: create_base is not possible with base image\n" if $isBase;
 
-    my $vol = $class->_volume($storeid, $scfg, $name);
+    my $volume_id = $class->_volume_id($storeid, $scfg, $name);
     my $api = $class->_api($storeid, $scfg);
 
     my $newname = $name;
     $newname =~ s/^vm-/base-/;
 
     $api->put(
-        "storage/v1/volumes/$vol->{volume_id}/label",
+        "storage/v1/volumes/$volume_id/label",
         { label => $newname, iscsi => { update_lun => JSON::true } },
     );
 
     # The snapshot every linked clone will be derived from.
     $api->post(
-        "snapmgr/v1/volumes/$vol->{volume_id}/snapshots",
+        "snapmgr/v1/volumes/$volume_id/snapshots",
         {
             snapshot_name => '__base__',
             snapshot_description => 'Proxmox VE base image',
@@ -854,8 +888,8 @@ sub clone_image {
     die "qnap: clone_image only works on base images or snapshots\n"
         if !$isBase && $snap eq '__base__';
 
-    my $vol = $class->_volume($storeid, $scfg, $basename);
-    my $snapshot_id = $class->_snapshot_id($storeid, $scfg, $vol->{volume_id}, $snap);
+    my $volume_id = $class->_volume_id($storeid, $scfg, $basename);
+    my $snapshot_id = $class->_snapshot_id($storeid, $scfg, $volume_id, $snap);
 
     my $name = $class->find_free_diskname($storeid, $scfg, $vmid, 'raw');
     my $target_index = $class->_target_index($storeid, $scfg);

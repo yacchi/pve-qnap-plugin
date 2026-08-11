@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.4
+
+- Stop listing every volume for operations that only need an id. Snapshots,
+  rollback, `create_base` and `clone_image` now resolve the name through the
+  pool-scoped listing (~0.25s) instead of the full one (~7.6s).
+- Resolve the LUN for `path` by name instead of going through the volume to
+  find its index. Proxmox calls `path` for every operation that touches a
+  disk, so this was the most expensive call in the plugin: 7.9s to 0.3s.
+
+`free_image`, `volume_size_info` and `volume_resize` still use the full
+listing, because the pool-scoped one carries no size, no `mapping_name` and
+no `provision_type`.
+
 ## 0.2.3
 
 - List volumes once per `pvesm list` instead of twice. Proxmox calls
