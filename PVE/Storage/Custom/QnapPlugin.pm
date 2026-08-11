@@ -46,6 +46,15 @@ my $API_MAX = 15;
 # must be filtered out.
 my $QNAP_VOLUME_TYPE_BLOCK = 3;
 
+# QuTS hero refuses to create a LUN for a zvol smaller than this: the volume is
+# created, the API answers "Success", and the LUN simply never appears.
+# Measured on QuTS hero h5.3.4 / TS-873A: 768 MiB never gets a LUN, 1 GiB does.
+#
+# PVE allocates small volumes on its own (1 MiB for `efidisk0`, 4 MiB for
+# `tpmstate0`), so without rounding up, any VM with OVMF firmware fails.
+# Thin provisioning makes the rounding nearly free in actual usage.
+my $QNAP_MIN_VOLUME_KB = 1024 * 1024;    # 1 GiB, in KiB (alloc_image's unit)
+
 sub api {
     # Call the constants with parentheses so they resolve at runtime. Importing
     # PVE::Storage to get them as barewords would risk a circular load, and api()
@@ -411,16 +420,36 @@ sub find_free_diskname {
 # --- volume lifecycle -----------------------------------------------------
 
 # Creation is asynchronous, so wait until a lun_index has been assigned.
+# Poll the iSCSI LUN listing, not the volume listing.
+#
+# `GET storage/v1/volumes` costs ~7.6s on a NAS holding ~20 volumes while
+# `GET iscsi/v1/luns` costs ~0.25s (measured on QuTS hero h5.3.4). PVE caps
+# the work inside a storage lock at 60s, so polling the volume listing spent
+# the whole budget by itself and allocation failed with
+# "'storage-<id>'-locked command timed out" even for a 1 MiB disk (issue #2).
+#
+# The loop is also deadline-based rather than counted: each iteration used to
+# take ~8.6s, so a `$timeout` of 60 actually meant about 8.6 minutes.
+#
+# The LUN is created by the same request that creates the volume
+# (`iscsi.create_lun`), so its presence with `lun_status == 1` is what
+# "ready" means here.
 sub _wait_for_lun {
     my ($class, $storeid, $scfg, $volname, $timeout) = @_;
 
     $timeout //= 60;
 
-    for my $i (1 .. $timeout) {
-        my $vol = $class->_volume($storeid, $scfg, $volname, 1);
-        if ($vol && !$vol->{creating} && ($vol->{lun_index} // -1) >= 0) {
-            return $vol;
+    my $deadline = time() + $timeout;
+
+    while (1) {
+        for my $lun (values %{ $class->_luns($storeid, $scfg) }) {
+            next if ($lun->{lun_name} // '') ne $volname;
+            # Do not gate on `lun_status`: a freshly created LUN shows 0 and
+            # only later becomes 1. Its presence with a valid index is enough.
+            return $lun if ($lun->{lun_index} // -1) >= 0;
         }
+
+        last if time() >= $deadline;
         sleep 1;
     }
 
@@ -433,24 +462,39 @@ sub alloc_image {
     die "qnap: unsupported format '$fmt' - only 'raw' is supported\n"
         if defined($fmt) && $fmt ne 'raw';
 
-    $name //= $class->find_free_diskname($storeid, $scfg, $vmid, 'raw');
+    # One listing for both the name search and the duplicate check.
+    # `GET storage/v1/volumes` is the expensive call here (~7.6s), and doing
+    # it twice put the allocation close to PVE's 60s storage-lock limit.
+    my $volumes = $class->_volumes($storeid, $scfg);
+
+    $name //= PVE::Storage::Plugin::get_next_vm_diskname(
+        [keys %$volumes], $storeid, $vmid, 'raw', $scfg);
 
     die "qnap: illegal name '$name' - should be 'vm-$vmid-*'\n"
         if $name !~ m/^vm-$vmid-/;
 
     die "qnap: volume '$name' already exists\n"
-        if $class->_volume($storeid, $scfg, $name, 1);
+        if $volumes->{$name};
 
     my $api = $class->_api($storeid, $scfg);
 
-    # $size arrives in KiB.
+    # $size arrives in KiB. Round up to what the NAS will actually back with a
+    # LUN, otherwise the volume is created but never becomes usable and we sit
+    # in _wait_for_lun until PVE's storage lock expires.
+    my $capacity_kb = int($size);
+    if ($capacity_kb < $QNAP_MIN_VOLUME_KB) {
+        warn "qnap: raising volume '$name' from ${capacity_kb}K to "
+            . "${QNAP_MIN_VOLUME_KB}K - the NAS does not create a LUN below that\n";
+        $capacity_kb = $QNAP_MIN_VOLUME_KB;
+    }
+
     $api->post(
         'storage/v1/volumes',
         {
             label => $name,
             type => 'zvol',
             pool_id => int($scfg->{'qnap-pool-id'}),
-            capacity => int($size) * 1024,
+            capacity => $capacity_kb * 1024,
             provision_type => 'thin',
             threshold => int($scfg->{'qnap-threshold'} // 80),
             iscsi => { create_lun => JSON::true },
