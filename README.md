@@ -121,9 +121,33 @@ synchronised across the cluster and readable by root only.
 per block — **three times** the nominal capacity, against the 1.5x RAIDZ2 is
 supposed to cost.
 
-**16k gives 4 data + 2 parity = 1.5x**, which is what you want. Use 64k if the
-workload is mostly sequential. It **cannot be changed after creation**, so define
-a second storage if you need a different value.
+**16k gives 4 data + 2 parity = 1.5x**, which is what you want.
+
+**Going above that buys nothing on the same geometry.** A RAIDZ row holds at most
+`width - parity` data sectors, and every allocation is rounded up to a multiple
+of `parity + 1` sectors. Once a block fills a whole row, the ratio stops
+improving:
+
+| `volblocksize` | sectors, 6-wide RAIDZ2, `ashift=12` | cost |
+| --- | --- | --- |
+| 4k | 1 data + 2 parity | 3.00x |
+| 8k | 2 data + 2 parity, padded to 6 | 3.00x |
+| **16k** | 4 data + 2 parity | **1.50x** |
+| 32k | 2 rows, 8 data + 4 parity | 1.50x |
+| 64k | 4 rows, 16 data + 8 parity | 1.50x |
+
+So 16k already reaches the RAIDZ2 minimum here, while a larger value multiplies
+read-modify-write: a 4k write from the guest rewrites the entire block, so 64k
+costs 16x instead of 4x. Larger values only pay off where 16k does *not* fill a
+row — a wider array or RAIDZ3 — or for a workload that is almost entirely
+sequential.
+
+**On mirrors there is no padding or parity penalty at all**, so choose by
+workload alone: 16k as a default, 8k if the guest mostly does 4k random writes
+(databases), at the cost of more metadata and a worse compression ratio.
+
+It **cannot be changed after creation**, so define a second storage if you need a
+different value.
 
 #### Fast clone does nothing here
 
