@@ -193,7 +193,10 @@ qm clone 100 999 --snapname snap1 --full 0
 - **`raw` only.** There is no qcow2 — these are block devices
 - **255 LUNs maximum** (`max_lun_cnt` on the NAS), so 255 VM disks
 - **Snapshots cannot be read directly.** Anything that needs to open a snapshot
-  as a device will not work; clone it first
+  as a device will not work; clone it first. In particular `--full 1` together
+  with `--snapname` is refused — a full clone copies the source through
+  `qemu-img`, which needs that device. Use `--full 0`, which is what you wanted
+  from a copy-on-write storage anyway
 - QTS (non-ZFS models) is untested
 
 ## How it works
