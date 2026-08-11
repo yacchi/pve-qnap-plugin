@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.2.2
+
+- Fix disk creation failing with "'storage-<id>'-locked command timed out",
+  which made any OVMF VM impossible to create. The NAS does not create a LUN
+  for a zvol below 1 GiB — it reports success and creates the volume, but no
+  LUN follows — so small requests are now rounded up with a warning. PVE
+  allocates 1 MiB for `efidisk0` and 4 MiB for `tpmstate0` by itself.
+- Wait for a new volume by polling the iSCSI LUN listing instead of the
+  volume listing: 0.25s per poll against 7.6s. The wait is also against a
+  deadline now, so its timeout means seconds rather than minutes.
+- List volumes once per allocation instead of twice.
+- Keep the API path normalisation in one place, so error messages no longer
+  read "/apistorage/v1/volumes".
+
 ## 0.2.1
 
 - Fix linked clones from a snapshot. Proxmox activates the source snapshot
