@@ -1,0 +1,9 @@
+#!/bin/sh
+set -e
+
+# Take the editor out of the web UI while ui-patch is still installed.
+if [ "$1" = "remove" ]; then
+    /usr/share/pve-qnap-plugin/ui-patch remove || true
+fi
+
+exit 0

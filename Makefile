@@ -1,4 +1,4 @@
-VERSION ?= 0.3.1
+VERSION ?= 0.4.0
 PERLDIR ?= /usr/share/perl5
 DESTDIR ?=
 
@@ -26,17 +26,23 @@ install:
 	install -d $(DESTDIR)$(PERLDIR)/PVE/Storage/Custom/Qnap
 	install -m 0644 PVE/Storage/Custom/QnapPlugin.pm $(DESTDIR)$(PERLDIR)/PVE/Storage/Custom/
 	install -m 0644 PVE/Storage/Custom/Qnap/API.pm   $(DESTDIR)$(PERLDIR)/PVE/Storage/Custom/Qnap/
+	install -d $(DESTDIR)/usr/share/$(PACKAGE)
+	install -m 0644 ui/qnap-ui.js $(DESTDIR)/usr/share/$(PACKAGE)/
+	install -m 0755 ui/ui-patch   $(DESTDIR)/usr/share/$(PACKAGE)/
 	install -d $(DESTDIR)/usr/share/doc/$(PACKAGE)
 	install -m 0644 README.md docs/qnap-api.md $(DESTDIR)/usr/share/doc/$(PACKAGE)/
 
 uninstall:
 	rm -f  $(DESTDIR)$(PERLDIR)/PVE/Storage/Custom/QnapPlugin.pm
 	rm -rf $(DESTDIR)$(PERLDIR)/PVE/Storage/Custom/Qnap
+	rm -rf $(DESTDIR)/usr/share/$(PACKAGE)
 	rm -rf $(DESTDIR)/usr/share/doc/$(PACKAGE)
 
 # Only needed after 'make install'. The package does this from its postinst.
+# 'make uninstall' leaves the web UI patched; run 'ui-patch remove' first.
 reload:
 	systemctl try-restart pvedaemon pveproxy pvestatd
+	$(DESTDIR)/usr/share/$(PACKAGE)/ui-patch apply
 
 # Build a .deb with no build dependencies beyond dpkg-deb, so this runs
 # unchanged on a Proxmox VE node.
@@ -45,7 +51,8 @@ deb: check
 	$(MAKE) install DESTDIR=$(BUILD)
 	install -d $(BUILD)/DEBIAN
 	sed 's/@VERSION@/$(VERSION)/' packaging/control.in > $(BUILD)/DEBIAN/control
-	install -m 0755 packaging/postinst packaging/postrm $(BUILD)/DEBIAN/
+	install -m 0755 packaging/postinst packaging/prerm packaging/postrm $(BUILD)/DEBIAN/
+	install -m 0644 packaging/triggers $(BUILD)/DEBIAN/
 	dpkg-deb --root-owner-group --build $(BUILD) $(DEB)
 	@echo
 	@echo "built $(DEB)"

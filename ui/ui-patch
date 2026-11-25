@@ -1,0 +1,51 @@
+#!/bin/sh
+# Add or remove the QNAP storage editor in the Proxmox VE web UI.
+#
+#   ui-patch apply    append qnap-ui.js to pvemanagerlib.js (replacing an older copy)
+#   ui-patch remove   take it out again
+#
+# pve-manager overwrites pvemanagerlib.js on every update; the package's dpkg
+# trigger runs 'apply' again afterwards. Reload the browser page (bypassing the
+# cache) to pick the change up.
+set -eu
+
+LIB=${PVE_MANAGERLIB:-/usr/share/pve-manager/js/pvemanagerlib.js}
+UI=${QNAP_UI_JS:-/usr/share/pve-qnap-plugin/qnap-ui.js}
+BEGIN='// pve-qnap-plugin UI: begin'
+END='// pve-qnap-plugin UI: end'
+
+case "${1:-}" in
+    apply | remove) ;;
+    *)
+        echo "usage: $0 apply|remove" >&2
+        exit 2
+        ;;
+esac
+
+if [ ! -f "$LIB" ]; then
+    echo "pve-qnap-plugin: $LIB not found, web UI left alone" >&2
+    exit 0
+fi
+
+# A begin marker without its end would make the filter below drop the rest of
+# the file. Refuse rather than guess.
+if [ "$(grep -cxF "$BEGIN" "$LIB")" != "$(grep -cxF "$END" "$LIB")" ]; then
+    echo "pve-qnap-plugin: unbalanced markers in $LIB, web UI left alone" >&2
+    exit 1
+fi
+
+tmp=$(mktemp "$LIB.qnap.XXXXXX")
+trap 'rm -f "$tmp"' EXIT
+
+awk -v b="$BEGIN" -v e="$END" '$0 == b { skip = 1; next } $0 == e { skip = 0; next } !skip' "$LIB" > "$tmp"
+
+if [ "$1" = apply ]; then
+    { echo "$BEGIN"; cat "$UI"; echo "$END"; } >> "$tmp"
+fi
+
+if cmp -s "$tmp" "$LIB"; then
+    exit 0
+fi
+
+chmod 0644 "$tmp"
+mv "$tmp" "$LIB"

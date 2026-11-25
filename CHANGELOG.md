@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.0
+
+- Add a QNAP editor to the Proxmox VE web UI, so the storage can be added and
+  edited there (iSER options included) instead of only with `pvesm`. The web
+  UI has no hook for custom storage types, so the editor is appended to
+  `pvemanagerlib.js` and a dpkg trigger re-adds it after each pve-manager
+  update. Reload the page bypassing the cache after installing.
+
 ## 0.3.1
 
 - Log in to the QNAP API again when it answers `811 The session is not found.`

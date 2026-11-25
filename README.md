@@ -77,7 +77,7 @@ is. The package restarts `pvedaemon`, `pveproxy` and `pvestatd` for you, which
 is required — Perl modules are loaded when those daemons start.
 
 There is also `make install` for a plain file copy, in which case run
-`make reload` afterwards.
+`make reload` afterwards (it also adds the web UI editor).
 
 ## Configure
 
@@ -99,6 +99,28 @@ networks.
 
 The password is stored in `/etc/pve/priv/storage/<storeid>.pw`, which is
 synchronised across the cluster and readable by root only.
+
+### Web UI
+
+The Proxmox VE web UI only opens the Add and Edit dialogs for the storage types
+it ships with. The package therefore adds a **QNAP** editor to it
+(Datacenter → Storage → Add → QNAP, or Edit on an existing one), covering the
+options below, iSER included.
+
+- It is appended to `/usr/share/pve-manager/js/pvemanagerlib.js` by
+  `/usr/share/pve-qnap-plugin/ui-patch`, between marker comments. pve-manager
+  replaces that file on every update; a dpkg trigger in this package adds the
+  editor back afterwards. Removing the package takes it out again.
+- After installing or updating, reload the page **bypassing the browser cache**
+  (Ctrl+Shift+R / Cmd+Shift+R): the file is served under the same URL until
+  pve-manager itself is updated.
+- The editor builds on internal classes of the web UI, not on a stable API. If
+  a Proxmox VE update breaks it, only this editor is affected (the error goes to
+  the browser console); `pvesm add` / `pvesm set` keep working. To take it out
+  by hand: `/usr/share/pve-qnap-plugin/ui-patch remove`.
+- Fields that cannot change after creation (server, portal, target, pool,
+  block size) are read-only when editing, as with the built-in types. Leave the
+  password empty to keep the stored one.
 
 ### Options
 
