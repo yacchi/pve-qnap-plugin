@@ -17,6 +17,9 @@
             return;
         }
 
+        const WINDOW_WIDTH = 800;
+        const LABEL_WIDTH = 120;
+
         // Optional booleans: a value equal to the default is left out of the config.
         const flag = (name, label, defaultValue) => ({
             xtype: 'proxmoxcheckbox',
@@ -242,6 +245,25 @@
 
                 me.callParent();
                 me.updateIserNodes();
+
+                // Proxmox.window.Edit sizes the dialog for 100px labels (600px
+                // wide), which truncates the hints and wraps longer labels.
+                // BaseEdit takes no size from the panel, so widen it here.
+                me.query('[isFormField]').forEach((field) => {
+                    field.labelWidth = LABEL_WIDTH;
+                });
+                me.on(
+                    'afterrender',
+                    () => {
+                        let win = me.up('window');
+                        if (win && win.getWidth() < WINDOW_WIDTH) {
+                            win.setWidth(WINDOW_WIDTH);
+                            win.center();
+                        }
+                    },
+                    me,
+                    { single: true },
+                );
             },
         });
 

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.1
+
+- Widen the QNAP editor in the web UI (800px, 120px labels); at the default
+  600px the hints were cut off and longer labels wrapped.
+
 ## 0.4.0
 
 - Add a QNAP editor to the Proxmox VE web UI, so the storage can be added and

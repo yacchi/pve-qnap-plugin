@@ -1,4 +1,4 @@
-VERSION ?= 0.4.0
+VERSION ?= 0.4.1
 PERLDIR ?= /usr/share/perl5
 DESTDIR ?=
 
