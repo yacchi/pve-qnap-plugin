@@ -36,7 +36,7 @@ use PVE::Storage::Custom::Qnap::API;
 
 use base qw(PVE::Storage::Plugin);
 
-our $VERSION = '0.2.1';
+our $VERSION = '0.3.0';
 
 # Range of pve-storage API versions this plugin supports.
 my $API_MIN = 9;
@@ -54,6 +54,12 @@ my $QNAP_VOLUME_TYPE_BLOCK = 3;
 # `tpmstate0`), so without rounding up, any VM with OVMF firmware fails.
 # Thin provisioning makes the rounding nearly free in actual usage.
 my $QNAP_MIN_VOLUME_KB = 1024 * 1024;    # 1 GiB, in KiB (alloc_image's unit)
+
+my $ISCSIADM = '/usr/bin/iscsiadm';
+
+# iSER needs an open-iscsi iface of its own. The built-in names `default` and
+# `iser` can be neither stored nor modified, so use a dedicated one.
+my $ISER_IFACE = 'pve-qnap-iser';
 
 sub api {
     # Call the constants with parentheses so they resolve at runtime. Importing
@@ -142,6 +148,15 @@ sub properties {
             maximum => 100,
             default => 80,
         },
+        'qnap-transport' => {
+            description => "iSCSI transport. 'iser' uses iSCSI Extensions for RDMA (needs an RDMA "
+                . "NIC on the node and iSER enabled on the NAS). 'auto' uses iSER on nodes that "
+                . "have an RDMA device and TCP on the others, and falls back to TCP when the "
+                . "iSER login fails. An existing session is kept until it is logged out.",
+            type => 'string',
+            enum => ['tcp', 'iser', 'auto'],
+            default => 'tcp',
+        },
     };
 }
 
@@ -162,6 +177,7 @@ sub options {
         'qnap-fast-clone' => { optional => 1 },
         'qnap-sync' => { optional => 1 },
         'qnap-threshold' => { optional => 1 },
+        'qnap-transport' => { optional => 1 },
         content => { optional => 1 },
         nodes => { optional => 1 },
         disable => { optional => 1 },
@@ -939,8 +955,7 @@ sub volume_has_feature {
 sub status {
     my ($class, $storeid, $scfg, $cache) = @_;
 
-    my $session = PVE::Storage::ISCSIPlugin::iscsi_session($cache, $scfg->{target});
-    my $active = defined($session) ? 1 : 0;
+    my $active = scalar(@{ _iscsi_sessions($scfg->{target}) }) ? 1 : 0;
 
     my $pools = eval { $class->_api($storeid, $scfg)->get('storage/v1/pools') };
     if (my $err = $@) {
@@ -964,11 +979,129 @@ sub status {
     return (0, 0, 0, 0);
 }
 
+# --- iSCSI sessions -------------------------------------------------------
+#
+# PVE::Storage::ISCSIPlugin only recognises `tcp:` sessions. With iSER it would
+# report the storage as inactive and attempt a TCP login on top of the iSER
+# session, so sessions are listed here for both transports.
+
+sub _iscsi_sessions {
+    my ($target) = @_;
+
+    my $res = [];
+    eval {
+        PVE::Tools::run_command(
+            [$ISCSIADM, '--mode', 'session'],
+            outfunc => sub {
+                my $line = shift;
+                # tcp: [1] 172.26.48.1:3260,1 iqn.2004-04.com.qnap:ts-873a:iscsi.water.65c031 (non-flash)
+                if ($line =~ m/^(tcp|iser):\s+\[(\S+)\]\s+(\S+:\d+),\S+\s+(\S+)/) {
+                    my ($transport, $sid, $portal, $name) = ($1, $2, $3, $4);
+                    push @$res, { transport => $transport, sid => $sid, portal => $portal }
+                        if $name eq $target;
+                }
+            },
+            errfunc => sub { },
+        );
+    };
+    # No error handling on purpose: iscsiadm exits 21 when there is no session at all.
+
+    return $res;
+}
+
+sub _rdma_available {
+    opendir(my $dh, '/sys/class/infiniband') or return 0;
+    my @devices = grep { !/^\./ } readdir($dh);
+    closedir($dh);
+
+    return scalar(@devices) > 0;
+}
+
+# The transport to log in with on this node.
+sub _transport {
+    my ($scfg) = @_;
+
+    my $transport = $scfg->{'qnap-transport'} // 'tcp';
+    return $transport if $transport ne 'auto';
+
+    return _rdma_available() ? 'iser' : 'tcp';
+}
+
+sub _ensure_iser_iface {
+    return if eval {
+        PVE::Tools::run_command(
+            [$ISCSIADM, '--mode', 'iface', '--interface', $ISER_IFACE],
+            outfunc => sub { }, errfunc => sub { },
+        );
+        1;
+    };
+
+    PVE::Tools::run_command([$ISCSIADM, '--mode', 'iface', '--interface', $ISER_IFACE, '--op', 'new']);
+    PVE::Tools::run_command([
+        $ISCSIADM, '--mode', 'iface', '--interface', $ISER_IFACE,
+        '--op', 'update', '--name', 'iface.transport_name', '--value', 'iser',
+    ]);
+}
+
+sub _iser_login {
+    my ($scfg, $portals) = @_;
+
+    _ensure_iser_iface();
+
+    for my $portal (@$portals) {
+        my @node = (
+            $ISCSIADM, '--mode', 'node', '--targetname', $scfg->{target},
+            '--portal', $portal, '--interface', $ISER_IFACE,
+        );
+
+        # Create the record directly instead of running a discovery: a discovery
+        # bound to one iface rewrites the records of the other ifaces.
+        eval { PVE::Tools::run_command([@node, '--op', 'new'], outfunc => sub { }) };
+
+        # Like ISCSIPlugin: do not retry inside pvestatd, its next run retries anyway.
+        eval {
+            PVE::Tools::run_command([
+                @node, '--op', 'update',
+                '--name', 'node.session.initial_login_retry_max', '--value', '0',
+            ]);
+        };
+
+        PVE::Tools::run_command([@node, '--login'], outfunc => sub { });
+    }
+
+    return;
+}
+
+# ISCSIPlugin::iscsi_login logs in every node record of the target. Drop ours
+# first so that a TCP login does not bring up an iSER session as well.
+sub _delete_iser_records {
+    my ($scfg) = @_;
+
+    eval {
+        PVE::Tools::run_command(
+            [
+                $ISCSIADM, '--mode', 'node', '--targetname', $scfg->{target},
+                '--interface', $ISER_IFACE, '--op', 'delete',
+            ],
+            outfunc => sub { }, errfunc => sub { },
+        );
+    };
+
+    return;
+}
+
 sub _rescan_sessions {
     my ($class, $scfg) = @_;
 
-    my $sessions = PVE::Storage::ISCSIPlugin::iscsi_session_list()->{ $scfg->{target} };
-    PVE::Storage::ISCSIPlugin::iscsi_session_rescan($sessions) if $sessions;
+    for my $session (@{ _iscsi_sessions($scfg->{target}) }) {
+        eval {
+            PVE::Tools::run_command(
+                [$ISCSIADM, '--mode', 'session', '--sid', $session->{sid}, '--rescan'],
+                outfunc => sub { },
+            );
+        };
+        warn $@ if $@;
+    }
 
     return;
 }
@@ -976,15 +1109,30 @@ sub _rescan_sessions {
 sub activate_storage {
     my ($class, $storeid, $scfg, $cache) = @_;
 
-    my $sessions = PVE::Storage::ISCSIPlugin::iscsi_session($cache, $scfg->{target});
+    # Keep a session that already exists, whatever its transport: switching
+    # needs a logout, which must not happen under running guests (see README).
+    if (scalar(@{ _iscsi_sessions($scfg->{target}) })) {
+        $class->_rescan_sessions($scfg);
+        return 1;
+    }
+
     my $portals = PVE::Storage::ISCSIPlugin::iscsi_portals($scfg->{target}, $scfg->{portal});
 
-    if (!defined($sessions)) {
-        eval { PVE::Storage::ISCSIPlugin::iscsi_login($scfg->{target}, $portals, $cache) };
-        warn $@ if $@;
-    } else {
-        PVE::Storage::ISCSIPlugin::iscsi_session_rescan($sessions);
+    if (_transport($scfg) eq 'iser') {
+        eval { _iser_login($scfg, $portals) };
+        my $err = $@;
+        return 1 if !$err;
+
+        if (($scfg->{'qnap-transport'} // 'tcp') ne 'auto') {
+            warn "qnap: iSER login failed: $err";
+            return 1;
+        }
+        warn "qnap: iSER login failed, falling back to TCP: $err";
     }
+
+    _delete_iser_records($scfg);
+    eval { PVE::Storage::ISCSIPlugin::iscsi_login($scfg->{target}, $portals, $cache) };
+    warn $@ if $@;
 
     return 1;
 }

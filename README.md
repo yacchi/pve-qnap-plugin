@@ -42,6 +42,7 @@ multipath is possible.
 | LXC containers | rootfs on a LUN, formatted ext4 by Proxmox |
 | shared storage | several nodes attached to the same target |
 | multipath (MPIO) | **experimental** — works by design, verified on one device (see below) |
+| iSER (iSCSI over RDMA) | `qnap-transport iser` / `auto` (see below) |
 
 ## Requirements
 
@@ -113,6 +114,7 @@ synchronised across the cluster and readable by root only.
 | `qnap-threshold` | `80` | thin provisioning warning threshold (%) |
 | `qnap-api-port` | `443` | management API port |
 | `qnap-verify-tls` | `0` | verify the NAS TLS certificate |
+| `qnap-transport` | `tcp` | `tcp`, `iser`, or `auto` (iSER where the node has an RDMA device) — see below |
 
 #### Choose the block size before you create anything
 
@@ -166,6 +168,44 @@ no data at all, which beats copying data quickly.
 
 It costs a lot of memory, and if the goal is many copies of the same guest, a
 linked clone achieves the same thing far more cheaply.
+
+## iSER (iSCSI over RDMA)
+
+`qnap-transport iser` logs in with iSER (iSCSI Extensions for RDMA, over RoCE)
+instead of TCP. `auto` does so on nodes that have an RDMA device
+(`/sys/class/infiniband`) and uses TCP on the others, so one storage definition
+serves a cluster where only some nodes have RDMA NICs; when the iSER login
+fails, `auto` falls back to TCP.
+
+Measured on a QuTS hero TS-873A (ConnectX-4 Lx, 40GbE) from a ConnectX-3 Pro
+node, 1 MiB sequential, `fio` direct I/O: write 18.5 vs 13.3 Gbit/s, read
+21.2 vs 17.3 Gbit/s for iSER vs TCP, at the same (saturated) NAS CPU. 4k random
+I/O is bound by the pool either way.
+
+Requirements:
+
+- iSER enabled on the NAS. QTS / QuTS hero only does this for QNAP-branded cards
+  and a short list of others; for a retail Mellanox ConnectX-4 or later card see
+  [qnap-iser-enabler](https://github.com/yacchi/qnap-iser-enabler)
+- an RDMA-capable NIC on the node (`mlx4_ib` / `mlx5_ib` loaded), and ideally
+  flow control (802.3x PAUSE or PFC) on the switch ports, since RoCE handles
+  loss poorly
+
+Notes:
+
+- **Do not define a second, built-in `iscsi` storage for the same target.**
+  Proxmox's own iSCSI code only recognises `tcp:` sessions: with an iSER session
+  it reports that storage as inactive and logs in over TCP as well, so every LUN
+  shows up twice. This plugin lists sessions itself for that reason.
+- An existing session is kept as it is. To switch a node from TCP to iSER, stop
+  the guests on that node that use this storage, then
+  `iscsiadm -m node -T <target> -p <portal> -I default --logout`; the next
+  `pvestatd` run (within ~10 s) logs in again with the configured transport.
+- The plugin uses its own open-iscsi iface, `pve-qnap-iser`, and creates its node
+  record directly rather than running a discovery, because a discovery bound to
+  one iface rewrites the records of the others. On a node that uses TCP, those
+  records are removed before logging in, since Proxmox logs in every record of
+  the target.
 
 ## Multipath (MPIO) — experimental
 

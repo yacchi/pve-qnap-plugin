@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.0
+
+- Add `qnap-transport` (`tcp`, `iser`, `auto`) for iSER (iSCSI over RDMA).
+  `auto` uses iSER on nodes with an RDMA device and TCP elsewhere, falling back
+  to TCP when the iSER login fails. The default stays `tcp`.
+- List iSCSI sessions in the plugin instead of through
+  `PVE::Storage::ISCSIPlugin`, which only recognises `tcp:` sessions and would
+  mark the storage inactive (and log in over TCP on top) with iSER.
+
 ## 0.2.4
 
 - Stop listing every volume for operations that only need an id. Snapshots,
