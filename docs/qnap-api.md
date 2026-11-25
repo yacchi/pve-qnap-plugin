@@ -48,7 +48,9 @@ Notes that cost time:
 - REST lives at `/api/...`. Prefixing it with `/cgi-bin/` returns 404.
 - Port 8080 redirects to 443, so use HTTPS directly.
 - An expired session is reported as **HTTP 200** with `error_code -22`, so the
-  body has to be inspected rather than the status code.
+  body has to be inspected rather than the status code. After the NAS reboots,
+  the old session id gets `{"error_code":811,"error_message":"The session is not
+  found."}` instead, also with HTTP 200; treat it the same way and log in again.
 - QNAP's own CSI driver sends credentials in the **query string**, where they
   end up in access logs and error messages. Use a POST body instead.
 

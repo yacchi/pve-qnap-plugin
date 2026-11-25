@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.1
+
+- Log in to the QNAP API again when it answers `811 The session is not found.`
+  The NAS answers this way, instead of with `-22`, after it has rebooted, so
+  the storage stayed offline in `pvestatd` until the daemons were restarted.
+
 ## 0.3.0
 
 - Add `qnap-transport` (`tcp`, `iser`) for iSER (iSCSI over RDMA), and

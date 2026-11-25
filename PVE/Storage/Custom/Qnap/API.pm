@@ -98,13 +98,17 @@ sub _sid {
 
 # --- REST -----------------------------------------------------------------
 
-# An expired session is reported as HTTP 200 with error_code -22, so the body
-# has to be inspected rather than the status code.
+# An expired session is reported as HTTP 200 with an error code, so the body
+# has to be inspected rather than the status code: -22 "sid is invalid." once
+# it times out, 811 "The session is not found." after the NAS has rebooted.
 sub _is_auth_error {
     my ($data) = @_;
     return 0 if ref($data) ne 'HASH';
-    return 0 if ($data->{error_code} // 0) != -22;
-    return ($data->{error_message} // '') =~ /sid is invalid/i;
+    my $code = $data->{error_code} // 0;
+    my $msg = $data->{error_message} // '';
+    return 1 if $code == -22 && $msg =~ /sid is invalid/i;
+    return 1 if $code == 811 && $msg =~ /session is not found/i;
+    return 0;
 }
 
 sub _rest_raw {
