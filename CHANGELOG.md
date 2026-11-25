@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.2
+
+- Activate the storage under a per-node lock. At boot pvestatd and pve-guests
+  activated it at the same time; both found no session, and the one that lost
+  the race failed its iSER login and fell back to TCP, leaving an iSER and a TCP
+  session to the same target (every LUN visible twice).
+
 ## 0.4.1
 
 - Widen the QNAP editor in the web UI (800px, 120px labels); at the default

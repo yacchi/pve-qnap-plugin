@@ -37,7 +37,7 @@ use PVE::Storage::Custom::Qnap::API;
 
 use base qw(PVE::Storage::Plugin);
 
-our $VERSION = '0.4.1';
+our $VERSION = '0.4.2';
 
 # Range of pve-storage API versions this plugin supports.
 my $API_MIN = 9;
@@ -1122,11 +1122,30 @@ sub _rescan_sessions {
 sub activate_storage {
     my ($class, $storeid, $scfg, $cache) = @_;
 
+    # At boot pvestatd and pve-guests activate storages at the same time. Without
+    # the lock both saw no session, both tried iSER, and the one that lost the
+    # race fell back to TCP: two sessions, every LUN visible twice.
+    PVE::Tools::lock_file(
+        "/var/lock/pve-qnap-$storeid.lck",
+        120,
+        sub { $class->_activate_sessions($scfg, $cache) },
+    );
+    die "qnap: activating storage '$storeid' failed: $@" if $@;
+
+    return 1;
+}
+
+# Called with the activation lock held.
+sub _activate_sessions {
+    my ($class, $scfg, $cache) = @_;
+
+    my $has_session = sub { scalar(@{ _iscsi_sessions($scfg->{target}) }) };
+
     # Keep a session that already exists, whatever its transport: switching
     # needs a logout, which must not happen under running guests (see README).
-    if (scalar(@{ _iscsi_sessions($scfg->{target}) })) {
+    if ($has_session->()) {
         $class->_rescan_sessions($scfg);
-        return 1;
+        return;
     }
 
     my $portals = PVE::Storage::ISCSIPlugin::iscsi_portals($scfg->{target}, $scfg->{portal});
@@ -1134,7 +1153,11 @@ sub activate_storage {
     if (_transport($scfg) eq 'iser') {
         eval { _iser_login($scfg, $portals) };
         my $err = $@;
-        return 1 if !$err;
+        return if !$err;
+
+        # A session that came up anyway (e.g. a login from outside the plugin)
+        # must not get a TCP twin.
+        return if $has_session->();
 
         warn "qnap: iSER login failed, falling back to TCP: $err";
     }
@@ -1143,7 +1166,7 @@ sub activate_storage {
     eval { PVE::Storage::ISCSIPlugin::iscsi_login($scfg->{target}, $portals, $cache) };
     warn $@ if $@;
 
-    return 1;
+    return;
 }
 
 sub deactivate_storage {
