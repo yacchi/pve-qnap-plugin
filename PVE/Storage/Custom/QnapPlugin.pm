@@ -27,6 +27,7 @@ use warnings;
 use Cwd qw(realpath);
 use JSON qw(decode_json);
 
+use PVE::INotify;
 use PVE::JSONSchema qw(get_standard_option);
 use PVE::Storage::ISCSIPlugin;
 use PVE::Storage::Plugin;
@@ -150,12 +151,18 @@ sub properties {
         },
         'qnap-transport' => {
             description => "iSCSI transport. 'iser' uses iSCSI Extensions for RDMA (needs an RDMA "
-                . "NIC on the node and iSER enabled on the NAS). 'auto' uses iSER on nodes that "
-                . "have an RDMA device and TCP on the others, and falls back to TCP when the "
-                . "iSER login fails. An existing session is kept until it is logged out.",
+                . "NIC on the node, a switch set up for RoCE, and iSER enabled on the NAS). A node "
+                . "without an RDMA device, or whose iSER login fails, uses TCP. An existing session "
+                . "is kept until it is logged out.",
             type => 'string',
-            enum => ['tcp', 'iser', 'auto'],
+            enum => ['tcp', 'iser'],
             default => 'tcp',
+        },
+        'qnap-iser-nodes' => {
+            description => "With 'qnap-transport iser': the nodes that use iSER. The other nodes "
+                . "use TCP. All nodes when unset.",
+            type => 'string',
+            format => 'pve-node-list',
         },
     };
 }
@@ -178,6 +185,7 @@ sub options {
         'qnap-sync' => { optional => 1 },
         'qnap-threshold' => { optional => 1 },
         'qnap-transport' => { optional => 1 },
+        'qnap-iser-nodes' => { optional => 1 },
         content => { optional => 1 },
         nodes => { optional => 1 },
         disable => { optional => 1 },
@@ -1017,12 +1025,17 @@ sub _rdma_available {
     return scalar(@devices) > 0;
 }
 
-# The transport to log in with on this node.
+# The transport to log in with on this node: iSER only when the storage asks
+# for it, this node is selected, and the node has an RDMA device.
 sub _transport {
     my ($scfg) = @_;
 
-    my $transport = $scfg->{'qnap-transport'} // 'tcp';
-    return $transport if $transport ne 'auto';
+    return 'tcp' if ($scfg->{'qnap-transport'} // 'tcp') ne 'iser';
+
+    if (my $nodes = $scfg->{'qnap-iser-nodes'}) {
+        my $node = PVE::INotify::nodename();
+        return 'tcp' if !grep { $_ eq $node } PVE::Tools::split_list($nodes);
+    }
 
     return _rdma_available() ? 'iser' : 'tcp';
 }
@@ -1123,10 +1136,6 @@ sub activate_storage {
         my $err = $@;
         return 1 if !$err;
 
-        if (($scfg->{'qnap-transport'} // 'tcp') ne 'auto') {
-            warn "qnap: iSER login failed: $err";
-            return 1;
-        }
         warn "qnap: iSER login failed, falling back to TCP: $err";
     }
 

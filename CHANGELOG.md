@@ -2,9 +2,10 @@
 
 ## 0.3.0
 
-- Add `qnap-transport` (`tcp`, `iser`, `auto`) for iSER (iSCSI over RDMA).
-  `auto` uses iSER on nodes with an RDMA device and TCP elsewhere, falling back
-  to TCP when the iSER login fails. The default stays `tcp`.
+- Add `qnap-transport` (`tcp`, `iser`) for iSER (iSCSI over RDMA), and
+  `qnap-iser-nodes` to choose the nodes that use it (all when unset); the other
+  nodes use TCP. A selected node without an RDMA device, or whose iSER login
+  fails, also uses TCP. The default stays `tcp`.
 - List iSCSI sessions in the plugin instead of through
   `PVE::Storage::ISCSIPlugin`, which only recognises `tcp:` sessions and would
   mark the storage inactive (and log in over TCP on top) with iSER.
